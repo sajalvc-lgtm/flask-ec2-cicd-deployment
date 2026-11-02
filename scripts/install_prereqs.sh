@@ -17,17 +17,18 @@ fi
 
 echo "==> Detected OS: $OS"
 
-echo "==> [2/5] Installing Python 3, Pip, Virtualenv, and Git..."
-if [[ "$OS" == "amzn" || "$OS" == "rhel" || "$OS" == "fedora" || "$OS" == "centos" ]]; then
-    sudo dnf update -y
-    sudo dnf install -y python3 python3-pip git curl jq
-elif [[ "$OS" == "ubuntu" || "$OS" == "debian" ]]; then
-    sudo apt-get update -y
-    sudo apt-get install -y python3 python3-pip python3-venv git curl jq
+echo "==> [2/5] Checking Python 3..."
+if command -v python3 >/dev/null 2>&1; then
+    echo "Python 3 is already installed ($(python3 --version)), skipping package manager update."
 else
-    echo "Unsupported OS distribution: $OS"
-    exit 1
+    echo "Python 3 not found, attempting installation via package manager..."
+    if [[ "$OS" == "amzn" || "$OS" == "rhel" || "$OS" == "fedora" || "$OS" == "centos" ]]; then
+        sudo dnf install -y python3 python3-pip || true
+    elif [[ "$OS" == "ubuntu" || "$OS" == "debian" ]]; then
+        sudo apt-get update -y && sudo apt-get install -y python3 python3-pip python3-venv || true
+    fi
 fi
+
 
 echo "==> [3/5] Creating dedicated system application user and group..."
 if ! id -u appuser >/dev/null 2>&1; then

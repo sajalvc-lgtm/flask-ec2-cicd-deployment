@@ -66,10 +66,16 @@ jobs:
           echo "==> Testing Bastion -> Private EC2 connectivity..."
           ssh private-ec2 "echo 'Connected successfully to private EC2: \$(hostname) (\$(hostname -I))'"
 
+      - name: Pre-download Python Wheels for Offline Deployment
+        run: |
+          echo "==> Pre-downloading wheels so Private EC2 requires ZERO internet..."
+          mkdir -p wheels
+          pip wheel -r app/requirements.txt -w wheels/ --prefer-binary || true
+
       - name: Transfer Application Code to Private EC2
         run: |
           echo "==> Transferring files via Bastion ProxyJump tunnel..."
-          ssh private-ec2 "mkdir -p ~/staging"
+          ssh private-ec2 "mkdir -p ~/staging/wheels"
           scp -r \
             app/app.py \
             app/requirements.txt \
@@ -77,6 +83,7 @@ jobs:
             scripts/install_prereqs.sh \
             scripts/python-app.service \
             private-ec2:~/staging/
+          scp -r wheels/*.whl private-ec2:~/staging/wheels/ || true
 
       - name: Execute Deployment on Private EC2
         run: |
@@ -90,15 +97,16 @@ jobs:
             sudo cp ~/staging/deploy.sh /opt/python-app/deploy.sh
             sudo chmod +x /opt/python-app/deploy.sh
 
-            # Run prerequisite setup if needed
+            # Run prerequisite setup if needed (skips dnf since python is installed)
             if ! id -u appuser >/dev/null 2>&1; then
               sudo chmod +x ~/staging/install_prereqs.sh
               ~/staging/install_prereqs.sh
             fi
 
-            # Deploy application
+            # Deploy application using offline wheels
             sudo /opt/python-app/deploy.sh
           EOF
+
 
       - name: Validate Health Check from Bastion
         env:

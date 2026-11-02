@@ -26,19 +26,36 @@ if [ ! -d "$APP_DIR/venv" ]; then
     sudo python3 -m venv "$APP_DIR/venv"
 fi
 
-# Ensure pip is up to date
-sudo "$APP_DIR/venv/bin/pip" install --upgrade pip setuptools wheel
+# Ensure pip is ready (skip online upgrade if no internet)
+sudo "$APP_DIR/venv/bin/pip" install --upgrade pip setuptools wheel 2>/dev/null || true
 
 # 3. Install/Update application dependencies
-if [ -f "$APP_DIR/requirements.txt" ]; then
-    echo "==> [2/5] Installing dependencies from requirements.txt..."
-    sudo "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.txt"
-elif [ -f "$APP_DIR/app/requirements.txt" ]; then
-    echo "==> [2/5] Installing dependencies from app/requirements.txt..."
-    sudo "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/app/requirements.txt"
+REQ_FILE="$APP_DIR/requirements.txt"
+if [ ! -f "$REQ_FILE" ] && [ -f "$APP_DIR/app/requirements.txt" ]; then
+    REQ_FILE="$APP_DIR/app/requirements.txt"
+fi
+
+# Check for offline wheels in APP_DIR or staging
+WHEELS_DIR=""
+if [ -d "$APP_DIR/wheels" ] && [ "$(ls -A "$APP_DIR/wheels" 2>/dev/null)" ]; then
+    WHEELS_DIR="$APP_DIR/wheels"
+elif [ -d "$HOME/staging/wheels" ] && [ "$(ls -A "$HOME/staging/wheels" 2>/dev/null)" ]; then
+    WHEELS_DIR="$HOME/staging/wheels"
+fi
+
+if [ -f "$REQ_FILE" ]; then
+    if [ -n "$WHEELS_DIR" ]; then
+        echo "==> [2/5] Installing dependencies from offline wheels bundle ($WHEELS_DIR)..."
+        sudo "$APP_DIR/venv/bin/pip" install --no-index --find-links="$WHEELS_DIR" -r "$REQ_FILE" || sudo "$APP_DIR/venv/bin/pip" install -r "$REQ_FILE"
+    else
+        echo "==> [2/5] Installing dependencies from requirements.txt..."
+        sudo "$APP_DIR/venv/bin/pip" install -r "$REQ_FILE" || true
+    fi
 else
     echo "WARNING: requirements.txt not found in $APP_DIR"
 fi
+
+
 
 
 # 4. Fix permissions
