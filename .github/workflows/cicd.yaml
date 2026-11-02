@@ -1,0 +1,189 @@
+name: CI/CD - Deploy Flask App to EC2 via Bastion Host
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+    inputs:
+      bastion_host:
+        description: "Bastion Public IP (Leave blank to use BASTION_HOST secret)"
+        required: false
+        type: string
+      private_ip:
+        description: "Private EC2 IP (Leave blank to use PRIVATE_EC2_IP secret)"
+        required: false
+        type: string
+
+jobs:
+  # ============================================================================
+  # Stage 1: Continuous Integration (CI) - Test & Lint
+  # ============================================================================
+  test:
+    name: Run Unit Tests & Linting
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r app/requirements.txt
+          pip install flake8 pytest pytest-cov
+
+      - name: Lint Code with Flake8
+        run: |
+          # Stop the build if there are Python syntax errors or undefined names
+          flake8 app --count --select=E9,F63,F7,F82 --show-source --statistics
+          # Treat all other issues as warnings
+          flake8 app --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+      - name: Run Pytest Test Suite
+        run: |
+          pytest app/tests/ -v --cov=app --cov-report=term-missing
+
+  # ============================================================================
+  # Stage 2: Continuous Deployment (CD) - Deploy via Bastion Host
+  # ============================================================================
+  deploy:
+    name: Deploy to Private EC2 via Bastion
+    needs: test
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Validate Required Secrets
+        env:
+          BASTION_HOST: ${{ inputs.bastion_host || secrets.BASTION_HOST }}
+          PRIVATE_IP: ${{ inputs.private_ip || secrets.PRIVATE_EC2_IP }}
+          BASTION_KEY: ${{ secrets.BASTION_SSH_KEY }}
+        run: |
+          if [ -z "$BASTION_HOST" ]; then
+            echo "::error::Secret 'BASTION_HOST' is not configured!"
+            exit 1
+          fi
+          if [ -z "$PRIVATE_IP" ]; then
+            echo "::error::Secret 'PRIVATE_EC2_IP' is not configured!"
+            exit 1
+          fi
+          if [ -z "$BASTION_KEY" ]; then
+            echo "::error::Secret 'BASTION_SSH_KEY' is not configured!"
+            exit 1
+          fi
+          echo "All required deployment secrets are present."
+
+      - name: Setup SSH Keys & OpenSSH ProxyJump
+        env:
+          BASTION_HOST: ${{ inputs.bastion_host || secrets.BASTION_HOST }}
+          BASTION_USER: ${{ secrets.BASTION_USER || 'ec2-user' }}
+          BASTION_KEY: ${{ secrets.BASTION_SSH_KEY }}
+          PRIVATE_IP: ${{ inputs.private_ip || secrets.PRIVATE_EC2_IP }}
+          PRIVATE_USER: ${{ secrets.PRIVATE_EC2_USER || 'ec2-user' }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_EC2_SSH_KEY || secrets.BASTION_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          # Write private keys with strict 600 permissions
+          echo "$BASTION_KEY" | tr -d '\r' > ~/.ssh/bastion_key
+          chmod 600 ~/.ssh/bastion_key
+
+          echo "$PRIVATE_KEY" | tr -d '\r' > ~/.ssh/private_key
+          chmod 600 ~/.ssh/private_key
+
+          # Configure OpenSSH ProxyJump
+          cat << EOF > ~/.ssh/config
+          Host bastion
+              HostName $BASTION_HOST
+              User $BASTION_USER
+              IdentityFile ~/.ssh/bastion_key
+              StrictHostKeyChecking no
+              UserKnownHostsFile /dev/null
+
+          Host private-ec2
+              HostName $PRIVATE_IP
+              User $PRIVATE_USER
+              IdentityFile ~/.ssh/private_key
+              ProxyJump bastion
+              StrictHostKeyChecking no
+              UserKnownHostsFile /dev/null
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Verify End-to-End Tunnel Connectivity
+        run: |
+          echo "==> Testing SSH connection to Private EC2 through Bastion Jump Host..."
+          ssh private-ec2 "echo 'Successfully connected to private host: \$(hostname) with IP: \$(hostname -I)'"
+
+      - name: Package Application Artifact
+        run: |
+          echo "==> Packaging Flask application, wsgi entrypoint, templates, and scripts..."
+          tar -czf release-bundle.tar.gz app/ wsgi.py scripts/
+
+      - name: Transfer Release Artifact via ProxyJump Tunnel
+        run: |
+          echo "==> Transferring release bundle through Bastion tunnel to Private EC2..."
+          ssh private-ec2 "mkdir -p ~/staging"
+          scp release-bundle.tar.gz private-ec2:~/staging/release-bundle.tar.gz
+
+      - name: Execute Deployment on Private EC2
+        run: |
+          echo "==> Running deployment commands on target Private EC2..."
+          ssh private-ec2 << 'EOF'
+            set -euo pipefail
+            APP_DIR="/opt/python-app"
+            STAGING_DIR="$HOME/staging"
+
+            echo "--> Extracting application bundle..."
+            sudo mkdir -p "$APP_DIR"
+            sudo tar -xzf "$STAGING_DIR/release-bundle.tar.gz" -C "$APP_DIR" --strip-components=0
+            
+            # Copy requirements to root of APP_DIR if nested
+            if [ -f "$APP_DIR/app/requirements.txt" ] && [ ! -f "$APP_DIR/requirements.txt" ]; then
+              sudo cp "$APP_DIR/app/requirements.txt" "$APP_DIR/requirements.txt"
+            fi
+
+            # Install systemd service unit
+            if [ -f "$APP_DIR/scripts/python-app.service" ]; then
+              sudo cp "$APP_DIR/scripts/python-app.service" /etc/systemd/system/python-app.service
+              sudo systemctl daemon-reload
+              sudo systemctl enable python-app.service
+            fi
+
+            # Run prerequisite bootstrap if appuser not present
+            if ! id -u appuser >/dev/null 2>&1; then
+              sudo chmod +x "$APP_DIR/scripts/install_prereqs.sh"
+              sudo "$APP_DIR/scripts/install_prereqs.sh"
+            fi
+
+            # Execute deployment script
+            sudo chmod +x "$APP_DIR/scripts/deploy.sh"
+            sudo "$APP_DIR/scripts/deploy.sh"
+
+            # Clean staging
+            rm -rf "$STAGING_DIR"
+          EOF
+
+      - name: Validate Service Health via Bastion Host
+        env:
+          PRIVATE_IP: ${{ inputs.private_ip || secrets.PRIVATE_EC2_IP }}
+        run: |
+          echo "==> Executing health verification curl from Bastion Host..."
+          ssh bastion << EOF
+            set -e
+            echo "--> Querying http://$PRIVATE_IP:5000/health..."
+            curl -s -f "http://$PRIVATE_IP:5000/health" | jq . || curl -s "http://$PRIVATE_IP:5000/health"
+          EOF
+          echo "==> Application deployment and health check verified successfully!"

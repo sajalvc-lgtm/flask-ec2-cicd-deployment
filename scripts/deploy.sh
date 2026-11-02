@@ -33,9 +33,13 @@ sudo "$APP_DIR/venv/bin/pip" install --upgrade pip setuptools wheel
 if [ -f "$APP_DIR/requirements.txt" ]; then
     echo "==> [2/5] Installing dependencies from requirements.txt..."
     sudo "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.txt"
+elif [ -f "$APP_DIR/app/requirements.txt" ]; then
+    echo "==> [2/5] Installing dependencies from app/requirements.txt..."
+    sudo "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/app/requirements.txt"
 else
     echo "WARNING: requirements.txt not found in $APP_DIR"
 fi
+
 
 # 4. Fix permissions
 echo "==> [3/5] Setting ownership to appuser..."

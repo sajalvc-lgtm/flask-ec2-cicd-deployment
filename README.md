@@ -29,11 +29,12 @@ This repository solves the requirement:
 
 | Requirement | Implementation | Security Profile |
 | :--- | :--- | :--- |
-| **Python Web App** | Flask REST API (`app/app.py`) + Gunicorn WSGI + Systemd service | Non-root `appuser`, auto-restart, health check |
-| **CI / Quality Gate** | GitHub Actions (`ci-test.yml`) with flake8 linting and pytest unit tests | Pre-deployment verification |
+| **Python Web App** | Modern Flask Web Dashboard + REST API (`app/app.py`, `wsgi.py`) | Non-root `appuser`, auto-restart, health check |
+| **Primary CI/CD Workflow** | [`.github/workflows/cicd.yaml`](file:///c:/Anti-gravity/.github/workflows/cicd.yaml) - Test & Deploy via Bastion | Lint, Pytest, OpenSSH `ProxyJump`, and Healthcheck |
 | **Public EC2** | Direct SSH deployment via GitHub Actions (`deploy-public-ip.yml`) | Port 22 SSH + Port 5000 HTTP |
-| **Private EC2 (Bastion)** | SSH Tunneling using OpenSSH `ProxyJump` (`deploy-private-bastion.yml`) | Private EC2 only accepts SSH from Bastion SG |
+| **Private EC2 (Bastion)** | SSH Tunneling using OpenSSH `ProxyJump` (`cicd.yaml` & `deploy-private-bastion.yml`) | Private EC2 only accepts SSH from Bastion SG |
 | **Private EC2 (SSM)** | Zero open inbound ports via AWS Systems Manager (`deploy-private-ssm.yml`) | Port 22 closed; communicates outbound to SSM API |
+
 
 ---
 

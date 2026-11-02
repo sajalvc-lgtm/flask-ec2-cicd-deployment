@@ -1,0 +1,98 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="hero">
+    <div class="badge">AWS Private Subnet Deployment</div>
+    <h1>Python Flask Application on AWS EC2</h1>
+    <p class="subtitle">Continuously deployed through GitHub Actions via an isolated Bastion Jump Host.</p>
+</div>
+
+<div class="grid-cards">
+    <div class="card status-card">
+        <div class="card-header">
+            <h3>Server Telemetry</h3>
+            <span class="live-dot"></span>
+        </div>
+        <ul class="meta-list">
+            <li><strong>Hostname:</strong> <code>{{ hostname }}</code></li>
+            <li><strong>Environment:</strong> <span class="badge-env">{{ environment }}</span></li>
+            <li><strong>Application Version:</strong> <code>v{{ version }}</code></li>
+            <li><strong>System OS:</strong> {{ os_info }}</li>
+            <li><strong>Server Uptime:</strong> {{ uptime }} seconds</li>
+            <li><strong>Local Timestamp:</strong> {{ timestamp }}</li>
+        </ul>
+    </div>
+
+    <div class="card architecture-card">
+        <div class="card-header">
+            <h3>Deployment Topology</h3>
+        </div>
+        <div class="topology-flow">
+            <div class="node">
+                <span class="node-icon">🐙</span>
+                <span class="node-name">GitHub Actions</span>
+            </div>
+            <div class="arrow">➔</div>
+            <div class="node">
+                <span class="node-icon">🛡️</span>
+                <span class="node-name">Bastion Host</span>
+                <small>Public Subnet</small>
+            </div>
+            <div class="arrow">➔</div>
+            <div class="node highlight">
+                <span class="node-icon">🐍</span>
+                <span class="node-name">Private EC2</span>
+                <small>Private Subnet</small>
+            </div>
+        </div>
+        <p class="topology-desc">
+            Traffic reaches this private instance exclusively via OpenSSH <code>ProxyJump</code> tunneling.
+            Port 22 is strictly restricted to the Bastion Security Group.
+        </p>
+    </div>
+</div>
+
+<div class="card api-card">
+    <div class="card-header">
+        <h3>Sample REST API Endpoints</h3>
+    </div>
+    <div class="table-responsive">
+        <table class="api-table">
+            <thead>
+                <tr>
+                    <th>Method</th>
+                    <th>Endpoint</th>
+                    <th>Description</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><span class="badge-get">GET</span></td>
+                    <td><code>/health</code></td>
+                    <td>Healthcheck probe for Load Balancers & GitHub Actions verification</td>
+                    <td><a href="/health" class="btn-sm" target="_blank">Test JSON</a></td>
+                </tr>
+                <tr>
+                    <td><span class="badge-get">GET</span></td>
+                    <td><code>/api/info</code></td>
+                    <td>System runtime diagnostics, python runtime, and memory</td>
+                    <td><a href="/api/info" class="btn-sm" target="_blank">Test JSON</a></td>
+                </tr>
+                <tr>
+                    <td><span class="badge-get">GET</span></td>
+                    <td><code>/api/tasks</code></td>
+                    <td>List in-memory demo tasks</td>
+                    <td><a href="/api/tasks" class="btn-sm" target="_blank">Test JSON</a></td>
+                </tr>
+                <tr>
+                    <td><span class="badge-post">POST</span></td>
+                    <td><code>/api/tasks</code></td>
+                    <td>Create a new task with JSON payload <code>{"title": "..."}</code></td>
+                    <td><code>curl -X POST /api/tasks</code></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
