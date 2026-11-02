@@ -1,9 +1,4 @@
-# Sample Python Application Package
-"""
-Flask Application Package.
-Exposes the main Flask application instance and in-memory store.
-"""
-
+cat << 'EOF' > app/__init__.py
 from .app import app, TASKS_STORE
-
 __all__ = ["app", "TASKS_STORE"]
+EOF
