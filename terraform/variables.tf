@@ -35,14 +35,28 @@ variable "instance_type" {
 }
 
 variable "key_name" {
-  description = "Name of the existing AWS EC2 Key Pair to associate with the instances"
+  description = "Name of an existing AWS EC2 Key Pair (only used if auto_generate_key_pair is false)"
   type        = string
   default     = "my-ec2-key"
 }
+
+variable "auto_generate_key_pair" {
+  description = "Automatically generate an RSA SSH key pair in AWS and save .pem locally (Prevents InvalidKeyPair.NotFound error)"
+  type        = bool
+  default     = true
+}
+
 
 variable "create_iam_user" {
   description = "Whether to create IAM user and access keys for GitHub Actions SSM deployment"
   type        = bool
   default     = true
 }
+
+variable "enable_nat_gateway" {
+  description = "Set to false to avoid AWS charges for NAT Gateway ($32/month). The pipeline uses offline wheels."
+  type        = bool
+  default     = false
+}
+
 

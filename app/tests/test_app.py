@@ -7,10 +7,15 @@ import pytest
 import sys
 import os
 
-# Ensure app directory is importable
+# Ensure project root and app directory are importable
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app import app, TASKS_STORE
+try:
+    from app.app import app, TASKS_STORE
+except ImportError:
+    from app import app, TASKS_STORE
+
 
 @pytest.fixture
 def client():

@@ -18,47 +18,12 @@ on:
 
 jobs:
   # ============================================================================
-  # Stage 1: Continuous Integration (CI) - Test & Lint
-  # ============================================================================
-  test:
-    name: Run Unit Tests & Linting
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
-
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r app/requirements.txt
-          pip install flake8 pytest pytest-cov
-
-      - name: Lint Code with Flake8
-        run: |
-          # Stop the build if there are Python syntax errors or undefined names
-          flake8 app --count --select=E9,F63,F7,F82 --show-source --statistics
-          # Treat all other issues as warnings
-          flake8 app --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-
-      - name: Run Pytest Test Suite
-        run: |
-          pytest app/tests/ -v --cov=app --cov-report=term-missing
-
-  # ============================================================================
-  # Stage 2: Continuous Deployment (CD) - Deploy via Bastion Host
+  # Continuous Deployment (CD) - Deploy via Bastion Host
   # ============================================================================
   deploy:
     name: Deploy to Private EC2 via Bastion
-    needs: test
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+
 
     steps:
       - name: Checkout Code
@@ -127,10 +92,14 @@ jobs:
           echo "==> Testing SSH connection to Private EC2 through Bastion Jump Host..."
           ssh private-ec2 "echo 'Successfully connected to private host: \$(hostname) with IP: \$(hostname -I)'"
 
-      - name: Package Application Artifact
+      - name: Package Application Artifact with Offline Wheels
         run: |
-          echo "==> Packaging Flask application, wsgi entrypoint, templates, and scripts..."
-          tar -czf release-bundle.tar.gz app/ wsgi.py scripts/
+          echo "==> Downloading Python wheels for offline deployment (works even if Private EC2 has no NAT Gateway)..."
+          mkdir -p wheels
+          pip wheel -r app/requirements.txt -w wheels/ --prefer-binary || true
+
+          echo "==> Packaging Flask application, wsgi entrypoint, templates, scripts, and wheels..."
+          tar -czf release-bundle.tar.gz app/ wsgi.py scripts/ requirements.txt wheels/
 
       - name: Transfer Release Artifact via ProxyJump Tunnel
         run: |

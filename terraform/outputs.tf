@@ -29,6 +29,16 @@ output "github_deployer_secret_access_key" {
   sensitive   = true
 }
 
+output "ssh_key_name" {
+  description = "The EC2 Key Pair name associated with all instances"
+  value       = local.selected_key_name
+}
+
+output "private_key_pem_file" {
+  description = "Path to the generated private key file on your computer"
+  value       = var.auto_generate_key_pair ? local_file.private_key_pem[0].filename : "Using existing key: ${var.key_name}"
+}
+
 output "github_secrets_summary" {
   description = "Summary of GitHub Actions Secrets values to configure"
   value = {
@@ -38,6 +48,8 @@ output "github_secrets_summary" {
     EC2_INSTANCE_ID      = aws_instance.private_ec2.id
     AWS_REGION           = var.aws_region
     AWS_ACCESS_KEY_ID    = var.create_iam_user ? aws_iam_access_key.github_deployer_key[0].id : "<CONFIGURE_MANUALLY>"
+    BASTION_SSH_KEY_FILE = var.auto_generate_key_pair ? "Open ${local_file.private_key_pem[0].filename} and copy contents" : "Use your existing ${var.key_name}.pem"
   }
 }
+
 
