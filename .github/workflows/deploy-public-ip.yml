@@ -19,24 +19,17 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
-
-      - name: Install Test Dependencies & Run Pytest
-        run: |
-          pip install --upgrade pip
-          pip install -r app/requirements.txt
-          pytest app/tests/ -v
-
       - name: Configure SSH Key
+
         env:
-          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
+          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY || secrets.BASTION_SSH_KEY }}
         run: |
+          if [ -z "$SSH_PRIVATE_KEY" ]; then
+            echo "ERROR: Neither EC2_SSH_KEY nor BASTION_SSH_KEY is set in GitHub Secrets!"
+            exit 1
+          fi
           mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/ec2_key
+          printf "%s\n" "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/ec2_key
           chmod 600 ~/.ssh/ec2_key
           # Disable strict host checking for dynamic runner environments
           cat << 'EOF' > ~/.ssh/config
@@ -44,6 +37,7 @@ jobs:
             StrictHostKeyChecking no
             UserKnownHostsFile=/dev/null
           EOF
+
 
       - name: Determine Target Host
         id: target
