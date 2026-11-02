@@ -1,0 +1,119 @@
+name: Deploy to EC2 (Public IP)
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      ec2_host:
+        description: "Target Public IP or DNS (Leave blank to use secret EC2_PUBLIC_IP)"
+        required: false
+        type: string
+
+jobs:
+  deploy-public:
+    name: Deploy to Public EC2 Server
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Test Dependencies & Run Pytest
+        run: |
+          pip install --upgrade pip
+          pip install -r app/requirements.txt
+          pytest app/tests/ -v
+
+      - name: Configure SSH Key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/ec2_key
+          chmod 600 ~/.ssh/ec2_key
+          # Disable strict host checking for dynamic runner environments
+          cat << 'EOF' > ~/.ssh/config
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile=/dev/null
+          EOF
+
+      - name: Determine Target Host
+        id: target
+        run: |
+          TARGET_HOST="${{ inputs.ec2_host || secrets.EC2_PUBLIC_IP }}"
+          if [ -z "$TARGET_HOST" ]; then
+            echo "ERROR: Target EC2 host is empty. Please set secret EC2_PUBLIC_IP or provide input."
+            exit 1
+          fi
+          echo "host=$TARGET_HOST" >> "$GITHUB_OUTPUT"
+
+      - name: Sync Application Code to EC2 via SCP / Rsync
+        env:
+          TARGET_HOST: ${{ steps.target.outputs.host }}
+          TARGET_USER: ${{ secrets.EC2_USER || 'ec2-user' }}
+        run: |
+          echo "==> Deploying files to $TARGET_USER@$TARGET_HOST..."
+          
+          # Create remote staging directory
+          ssh -i ~/.ssh/ec2_key "$TARGET_USER@$TARGET_HOST" "mkdir -p ~/staging"
+
+          # Copy app files, requirements, and deployment scripts
+          scp -i ~/.ssh/ec2_key -r \
+            app/app.py \
+            app/requirements.txt \
+            scripts/deploy.sh \
+            scripts/install_prereqs.sh \
+            scripts/python-app.service \
+            "$TARGET_USER@$TARGET_HOST:~/staging/"
+
+      - name: Execute Deployment Script on Remote Server
+        env:
+          TARGET_HOST: ${{ steps.target.outputs.host }}
+          TARGET_USER: ${{ secrets.EC2_USER || 'ec2-user' }}
+        run: |
+          echo "==> Running remote deployment commands..."
+          ssh -i ~/.ssh/ec2_key "$TARGET_USER@$TARGET_HOST" << 'EOF'
+            set -e
+            echo "--> Preparing /opt/python-app..."
+            sudo mkdir -p /opt/python-app
+            sudo cp ~/staging/app.py /opt/python-app/app.py
+            sudo cp ~/staging/requirements.txt /opt/python-app/requirements.txt
+            sudo cp ~/staging/python-app.service /etc/systemd/system/python-app.service
+            sudo cp ~/staging/deploy.sh /opt/python-app/deploy.sh
+            sudo chmod +x /opt/python-app/deploy.sh
+
+            # Run prerequisites if user/venv not initialized
+            if ! id -u appuser >/dev/null 2>&1; then
+              sudo chmod +x ~/staging/install_prereqs.sh
+              ~/staging/install_prereqs.sh
+            fi
+
+            # Execute deployment script
+            sudo /opt/python-app/deploy.sh
+          EOF
+
+      - name: Verify Health Check via Public URL
+        env:
+          TARGET_HOST: ${{ steps.target.outputs.host }}
+        run: |
+          echo "==> Validating public endpoint at http://$TARGET_HOST:5000/health..."
+          for i in {1..10}; do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://$TARGET_HOST:5000/health" || true)
+            if [ "$HTTP_CODE" -eq 200 ]; then
+              echo "==> Public Health Check Passed with HTTP 200!"
+              curl -s "http://$TARGET_HOST:5000/health"
+              exit 0
+            fi
+            echo "Attempt $i: HTTP status $HTTP_CODE. Retrying in 3 seconds..."
+            sleep 3
+          done
+          echo "ERROR: Health check failed against public endpoint!"
+          exit 1

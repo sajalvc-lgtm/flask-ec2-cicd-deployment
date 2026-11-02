@@ -1,0 +1,124 @@
+name: Deploy to Private EC2 (via Bastion Host)
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      bastion_host:
+        description: "Bastion Public IP (Leave blank to use secret BASTION_HOST)"
+        required: false
+        type: string
+      private_ip:
+        description: "Target Private IP (Leave blank to use secret PRIVATE_EC2_IP)"
+        required: false
+        type: string
+
+jobs:
+  deploy-bastion:
+    name: Deploy to Private EC2 via Bastion Host
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Run Tests Locally Before Deployment
+        run: |
+          pip install --upgrade pip
+          pip install -r app/requirements.txt
+          pytest app/tests/ -v
+
+      - name: Setup SSH Keys & ProxyJump Configuration
+        env:
+          BASTION_KEY: ${{ secrets.BASTION_SSH_KEY }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_EC2_SSH_KEY || secrets.BASTION_SSH_KEY }}
+          BASTION_HOST: ${{ inputs.bastion_host || secrets.BASTION_HOST }}
+          BASTION_USER: ${{ secrets.BASTION_USER || 'ec2-user' }}
+          PRIVATE_IP: ${{ inputs.private_ip || secrets.PRIVATE_EC2_IP }}
+          PRIVATE_USER: ${{ secrets.PRIVATE_EC2_USER || 'ec2-user' }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          # Save keys
+          echo "$BASTION_KEY" | tr -d '\r' > ~/.ssh/bastion_key
+          chmod 600 ~/.ssh/bastion_key
+
+          echo "$PRIVATE_KEY" | tr -d '\r' > ~/.ssh/private_key
+          chmod 600 ~/.ssh/private_key
+
+          # Configure OpenSSH ProxyJump
+          cat << EOF > ~/.ssh/config
+          Host bastion
+              HostName $BASTION_HOST
+              User $BASTION_USER
+              IdentityFile ~/.ssh/bastion_key
+              StrictHostKeyChecking no
+              UserKnownHostsFile /dev/null
+
+          Host private-ec2
+              HostName $PRIVATE_IP
+              User $PRIVATE_USER
+              IdentityFile ~/.ssh/private_key
+              ProxyJump bastion
+              StrictHostKeyChecking no
+              UserKnownHostsFile /dev/null
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Test Connection to Private EC2 via Bastion Jump
+        run: |
+          echo "==> Testing Bastion -> Private EC2 connectivity..."
+          ssh private-ec2 "echo 'Connected successfully to private EC2: \$(hostname) (\$(hostname -I))'"
+
+      - name: Transfer Application Code to Private EC2
+        run: |
+          echo "==> Transferring files via Bastion ProxyJump tunnel..."
+          ssh private-ec2 "mkdir -p ~/staging"
+          scp -r \
+            app/app.py \
+            app/requirements.txt \
+            scripts/deploy.sh \
+            scripts/install_prereqs.sh \
+            scripts/python-app.service \
+            private-ec2:~/staging/
+
+      - name: Execute Deployment on Private EC2
+        run: |
+          echo "==> Executing deployment on private EC2..."
+          ssh private-ec2 << 'EOF'
+            set -e
+            sudo mkdir -p /opt/python-app
+            sudo cp ~/staging/app.py /opt/python-app/app.py
+            sudo cp ~/staging/requirements.txt /opt/python-app/requirements.txt
+            sudo cp ~/staging/python-app.service /etc/systemd/system/python-app.service
+            sudo cp ~/staging/deploy.sh /opt/python-app/deploy.sh
+            sudo chmod +x /opt/python-app/deploy.sh
+
+            # Run prerequisite setup if needed
+            if ! id -u appuser >/dev/null 2>&1; then
+              sudo chmod +x ~/staging/install_prereqs.sh
+              ~/staging/install_prereqs.sh
+            fi
+
+            # Deploy application
+            sudo /opt/python-app/deploy.sh
+          EOF
+
+      - name: Validate Health Check from Bastion
+        env:
+          PRIVATE_IP: ${{ inputs.private_ip || secrets.PRIVATE_EC2_IP }}
+        run: |
+          echo "==> Validating private instance health check through Bastion..."
+          ssh bastion "curl -s -f http://$PRIVATE_IP:5000/health" || {
+            echo "ERROR: Health check from bastion to private EC2 failed!"
+            exit 1
+          }
+          echo "==> Bastion -> Private EC2 health check succeeded!"

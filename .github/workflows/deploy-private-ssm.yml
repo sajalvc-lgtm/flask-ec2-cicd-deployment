@@ -1,0 +1,181 @@
+name: Deploy to Private EC2 (via AWS SSM)
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      instance_id:
+        description: "Target EC2 Instance ID (e.g., i-0123456789abcdef0, leave blank to use secret)"
+        required: false
+        type: string
+
+permissions:
+  id-token: write # Required for GitHub OIDC authentication
+  contents: read
+
+jobs:
+  deploy-ssm:
+    name: Deploy to Private EC2 via AWS Systems Manager
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Run Pytest Tests
+        run: |
+          pip install --upgrade pip
+          pip install -r app/requirements.txt
+          pytest app/tests/ -v
+
+      - name: Configure AWS Credentials (OIDC or Secret Keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          # If using OIDC (Recommended):
+          # role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          # If using IAM User access keys:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Validate Target Instance ID
+        id: target
+        run: |
+          TARGET_INSTANCE="${{ inputs.instance_id || secrets.EC2_INSTANCE_ID }}"
+          if [ -z "$TARGET_INSTANCE" ]; then
+            echo "ERROR: EC2 Instance ID not provided. Set secret EC2_INSTANCE_ID or provide input."
+            exit 1
+          fi
+          echo "instance_id=$TARGET_INSTANCE" >> "$GITHUB_OUTPUT"
+
+      - name: Check SSM Agent Status on Target Instance
+        run: |
+          INSTANCE_ID="${{ steps.target.outputs.instance_id }}"
+          echo "==> Verifying SSM connection status for $INSTANCE_ID..."
+          
+          STATUS=$(aws ssm describe-instance-information \
+            --filters "Key=InstanceIds,Values=$INSTANCE_ID" \
+            --query "InstanceInformationList[0].PingStatus" \
+            --output text)
+            
+          echo "--> SSM Agent Ping Status: $STATUS"
+          if [ "$STATUS" != "Online" ]; then
+            echo "WARNING: SSM Agent is not Online ($STATUS). Make sure the instance is running and has AmazonSSMManagedInstanceCore IAM role attached."
+          fi
+
+      - name: Package Application Archive
+        run: |
+          echo "==> Packaging application files into deployment archive..."
+          tar -czf app-deployment.tar.gz app/ scripts/
+
+      - name: Optional S3 Deployment Artifact Upload
+        id: s3_upload
+        run: |
+          S3_BUCKET="${{ secrets.DEPLOY_S3_BUCKET }}"
+          if [ -n "$S3_BUCKET" ]; then
+            echo "==> Uploading app-deployment.tar.gz to s3://$S3_BUCKET/releases/..."
+            aws s3 cp app-deployment.tar.gz "s3://$S3_BUCKET/releases/app-latest.tar.gz"
+            echo "has_s3=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "==> S3 bucket not specified. Will deploy via repository clone / base64 payload."
+            echo "has_s3=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Execute Deployment via SSM Run Command
+        id: ssm_exec
+        env:
+          INSTANCE_ID: ${{ steps.target.outputs.instance_id }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+          HAS_S3: ${{ steps.s3_upload.outputs.has_s3 }}
+          S3_BUCKET: ${{ secrets.DEPLOY_S3_BUCKET }}
+        run: |
+          echo "==> Submitting SSM Run Command (AWS-RunShellScript) to $INSTANCE_ID..."
+
+          # Define the remote deployment command
+          if [ "$HAS_S3" = "true" ]; then
+            COMMAND_SCRIPT="aws s3 cp s3://$S3_BUCKET/releases/app-latest.tar.gz /tmp/app-latest.tar.gz
+mkdir -p /opt/python-app
+tar -xzf /tmp/app-latest.tar.gz -C /opt/python-app --strip-components=0
+chmod +x /opt/python-app/scripts/*.sh
+/opt/python-app/scripts/deploy.sh"
+          else
+            COMMAND_SCRIPT="if ! command -v git >/dev/null 2>&1; then dnf install -y git || apt-get install -y git; fi
+mkdir -p /opt/python-app
+if [ -d /opt/python-app/.git ]; then
+  cd /opt/python-app && git fetch origin && git checkout $BRANCH && git pull origin $BRANCH
+else
+  git clone -b $BRANCH $REPO_URL /opt/python-app
+fi
+chmod +x /opt/python-app/scripts/*.sh
+/opt/python-app/scripts/deploy.sh"
+          fi
+
+          # Send SSM Run Command
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Automated deployment from GitHub Actions" \
+            --parameters "commands=[\"set -e\",\"$COMMAND_SCRIPT\"]" \
+            --output text \
+            --query "Command.CommandId")
+
+          echo "--> Dispatched SSM Command ID: $CMD_ID"
+          echo "command_id=$CMD_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Poll SSM Command Execution Output
+        env:
+          INSTANCE_ID: ${{ steps.target.outputs.instance_id }}
+          COMMAND_ID: ${{ steps.ssm_exec.outputs.command_id }}
+        run: |
+          echo "==> Waiting for SSM Command $COMMAND_ID to finish..."
+          
+          # Poll command status up to 30 times (every 5s = 150s max)
+          STATUS="InProgress"
+          COUNT=0
+          while [ "$STATUS" = "InProgress" ] || [ "$STATUS" = "Pending" ]; do
+            sleep 5
+            COUNT=$((COUNT + 1))
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query "Status" \
+              --output text 2>/dev/null || echo "Pending")
+              
+            echo "--> Attempt $COUNT: Status = $STATUS"
+            if [ $COUNT -ge 30 ]; then
+              echo "ERROR: Timeout waiting for SSM Run Command completion!"
+              exit 1
+            fi
+          done
+
+          echo "=========================================================="
+          echo " SSM Command Standard Output:"
+          echo "=========================================================="
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query "StandardOutputContent" \
+            --output text
+
+          if [ "$STATUS" != "Success" ]; then
+            echo "=========================================================="
+            echo " SSM Command Error Output:"
+            echo "=========================================================="
+            aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query "StandardErrorContent" \
+              --output text
+            echo "ERROR: SSM Command failed with status: $STATUS"
+            exit 1
+          fi
+
+          echo "==> SSM Deployment Finished Successfully!"

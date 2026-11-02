@@ -1,0 +1,22 @@
+[Unit]
+Description=Gunicorn instance to serve sample Python Web Application
+After=network.target
+
+[Service]
+User=appuser
+Group=appuser
+WorkingDirectory=/opt/python-app
+Environment="PATH=/opt/python-app/venv/bin:/usr/local/bin:/usr/bin"
+Environment="APP_ENV=production"
+Environment="APP_VERSION=1.0.0"
+Environment="PORT=5000"
+ExecStart=/opt/python-app/venv/bin/gunicorn --workers 3 --bind 0.0.0.0:5000 --timeout 60 --access-logfile /var/log/python-app-access.log --error-logfile /var/log/python-app-error.log app:app
+Restart=always
+RestartSec=5
+KillSignal=SIGQUIT
+Type=notify
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
