@@ -39,3 +39,10 @@ variable "key_name" {
   type        = string
   default     = "my-ec2-key"
 }
+
+variable "create_iam_user" {
+  description = "Whether to create IAM user and access keys for GitHub Actions SSM deployment"
+  type        = bool
+  default     = true
+}
+
